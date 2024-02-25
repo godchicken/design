@@ -1,0 +1,25 @@
+{
+  "name": "hyper-design-svg-util",
+  "version": "1.0.0",
+  "description": "fatser svg utils",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm run test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/godchicken/design.git"
+  },
+  "keywords": [
+    "design",
+    "svg",
+    "util",
+    "npm"
+  ],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/godchicken/design/issues"
+  },
+  "homepage": "https://github.com/godchicken/design#readme"
+}
