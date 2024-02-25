@@ -1,148 +1,287 @@
 'use strict';
-/*globals Promise */
 
-var JSZipUtils = {};
-// just use the responseText with xhr1, response with xhr2.
-// The transformation doesn't throw away high-order byte (with responseText)
-// because JSZip handles that case. If not used with JSZip, you may need to
-// do it, see https://developer.mozilla.org/En/Using_XMLHttpRequest#Handling_binary_data
-JSZipUtils._getBinaryFromXHR = function (xhr) {
-    // for xhr.responseText, the 0xFF mask is applied by JSZip
-    return xhr.response || xhr.responseText;
-};
+var fs          = require('fs'),
+    _           = require('underscore'),
+    elements    = require(__dirname + '/objects/index'),
+    dxfParser   = require('dxf-parsing').Parser;
 
-// taken from jQuery
-function createStandardXHR() {
-    try {
-        return new window.XMLHttpRequest();
-    } catch( e ) {}
-}
-
-function createActiveXHR() {
-    try {
-        return new window.ActiveXObject("Microsoft.XMLHTTP");
-    } catch( e ) {}
-}
-
-// Create the request object
-var createXHR = (typeof window !== "undefined" && window.ActiveXObject) ?
-    /* Microsoft failed to properly
-     * implement the XMLHttpRequest in IE7 (can't request local files),
-     * so we use the ActiveXObject when it is available
-     * Additionally XMLHttpRequest can be disabled in IE7/IE8 so
-     * we need a fallback.
-     */
-    function() {
-    return createStandardXHR() || createActiveXHR();
-} :
-    // For all other browsers, use the standard XMLHttpRequest object
-    createStandardXHR;
-
-
-
+var Parser = function Parser() {};
 
 /**
- * @param  {string} path    The path to the resource to GET.
- * @param  {function|{callback: function, progress: function}} options
- * @return {Promise|undefined} If no callback is passed then a promise is returned
+ * Convert Svg file into Svg object
+ * @param {object}      svg                 xml2js object
+ * @param {function}    callback            Callback function
  */
-SvgUtils.getBaseCode(String path)
- = function (path, options) {
-    var promise, resolve, reject;
-    var callback;
-
-    if (!options) {
-        options = {};
+Parser.convertXml = function convertXml(svg, callback) {
+    if(svg == null || typeof svg.svg == 'undefined' || svg.svg == null){
+        callback(new Error("Your SVG is empty or invalid"));
+        return;
     }
 
-    // backward compatible callback
-    if (typeof options === "function") {
-        callback = options;
-        options = {};
-    } else if (typeof options.callback === 'function') {
-        // callback inside options object
-        callback = options.callback;
-    }
-
-    if (!callback && typeof Promise !== "undefined") {
-        promise = new Promise(function (_resolve, _reject) {
-            resolve = _resolve;
-            reject = _reject;
-        });
-    } else {
-        resolve = function (data) { callback(null, data); };
-        reject = function (err) { callback(err, null); };
-    }
-
-    /*
-     * Here is the tricky part : getting the data.
-     * In firefox/chrome/opera/... setting the mimeType to 'text/plain; charset=x-user-defined'
-     * is enough, the result is in the standard xhr.responseText.
-     * cf https://developer.mozilla.org/En/XMLHttpRequest/Using_XMLHttpRequest#Receiving_binary_data_in_older_browsers
-     * In IE <= 9, we must use (the IE only) attribute responseBody
-     * (for binary data, its content is different from responseText).
-     * In IE 10, the 'charset=x-user-defined' trick doesn't work, only the
-     * responseType will work :
-     * http://msdn.microsoft.com/en-us/library/ie/hh673569%28v=vs.85%29.aspx#Binary_Object_upload_and_download
-     *
-     * I'd like to use jQuery to avoid this XHR madness, but it doesn't support
-     * the responseType attribute : http://bugs.jquery.com/ticket/11461
-     */
-    try {
-        var xhr = createXHR();
-
-        xhr.open('GET', path, true);
-
-        // recent browsers
-        if ("responseType" in xhr) {
-            xhr.responseType = "arraybuffer";
-        }
-
-        // older browser
-        if(xhr.overrideMimeType) {
-            xhr.overrideMimeType("text/plain; charset=x-user-defined");
-        }
-
-        xhr.onreadystatechange = function (event) {
-            // use `xhr` and not `this`... thanks IE
-            if (xhr.readyState === 4) {
-                if (xhr.status === 200 || xhr.status === 0) {
-                    try {
-                        resolve(JSZipUtils._getBinaryFromXHR(xhr));
-                    } catch(err) {
-                        reject(new Error(err));
-                    }
-                } else {
-                    reject(new Error("Ajax error for " + path + " : " + this.status + " " + this.statusText));
-                }
-            }
-        };
-
-        if(options.progress) {
-            xhr.onprogress = function(e) {
-                options.progress({
-                    path: path,
-                    originalEvent: e,
-                    percent: e.loaded / e.total * 100,
-                    loaded: e.loaded,
-                    total: e.total
-                });
-            };
-        }
-
-        xhr.send();
-
-    } catch (e) {
-        reject(new Error(e), null);
-    }
-
-    // returns a promise or undefined depending on whether a callback was
-    // provided
-    return promise;
+    var elements = Parser.parseXmlNode(svg.svg);
+    callback(null, elements);
 };
 
-// export
-module.exports = JSZipUtils;
+/**
+ * Convert JSON file into Svg object
+ * @param {object}      json                json object
+ * @param {function}    callback            Callback function
+ */
+Parser.convertJson = function convertJson(json, callback) {
+    if(typeof json.elements == 'undefined' || json.elements.length == 0){
+        callback(new Error("Your SVG is empty or invalid"));
+        return;
+    }
 
-// enforcing Stuk's coding style
-// vim: set shiftwidth=4 softtabstop=4:
+    var elements = Parser.parseJson(json.elements);
+    callback(null, elements);
+};
+
+/**
+ * Parse svg possibles nodes : <rect>, <g>, ...
+ * @param {object}      node                xml2js node
+ * @returns {Array}                         node elements convert to SvgObject type
+ */
+Parser.parseXmlNode = function parseXmlNode(node) {
+    var nodes = [];
+
+    _.each(node, function (content, index) {
+        switch (index) {
+            case 'g' :
+                nodes = _.union(nodes, Parser.parseXmlGroup(content));
+                break;
+            case 'polygon' :
+                nodes = _.union(nodes, Parser.parseXmlPolygon(content));
+                break;
+            case 'polyline' :
+                nodes = _.union(nodes, Parser.parseXmlPolygon(content, true));
+                break;
+            case 'rect' :
+                nodes = _.union(nodes, Parser.parseXmlRect(content));
+                break;
+            case 'text' :
+                nodes = _.union(nodes, Parser.parseXmlText(content));
+                break;
+            case 'image' :
+                nodes = _.union(nodes, Parser.parseXmlImage(content));
+                break;
+            case 'circle' :
+                nodes = _.union(nodes, Parser.parseXmlCircle(content));
+                break;
+        }
+    });
+
+    return nodes;
+};
+
+/**
+ * Parse json elements
+ * @param {Array}      elements               xml2js node
+ * @returns {Array}                           node elements convert to SvgObject type
+ */
+Parser.parseJson = function parseJson(elements) {
+    var nodes = [];
+
+    _.each(elements, function (element) {
+        switch (element.type) {
+            case 'g' :
+                nodes.push(Parser.parseJsonGroup(element));
+                break;
+            case 'polygon' :
+                nodes.push(Parser.parseJsonPolygon(element));
+                break;
+            case 'polyline' :
+                nodes.push(Parser.parseJsonPolygon(element, true));
+                break;
+            case 'rect' :
+                nodes.push(Parser.parseJsonRect(element));
+                break;
+            case 'text' :
+                nodes.push(Parser.parseJsonText(element));
+                break;
+            case 'image' :
+                nodes.push(Parser.parseJsonImage(element));
+                break;
+            case 'circle' :
+                nodes.push(Parser.parseJsonCircle(element));
+                break;
+        }
+    });
+
+    return nodes;
+};
+
+/**
+ * Parse Group Elements Array
+ * @param {Array}   array                   xml2js elements array
+ * @returns {Array}                         Groups array
+ */
+Parser.parseXmlGroup = function parseXmlGroup(array) {
+    var groups = [];
+
+    _.each(array, function (item) {
+        groups.push(elements.Group.fromNode(item));
+    });
+
+    return groups;
+};
+
+/**
+ * Parse Group json element
+ * @param {object}  elem                    Group element in JSON format
+ * @returns {object}                        Group object
+ */
+Parser.parseJsonGroup = function parseJsonGroup(elem) {
+    return elements.Group.fromJson(elem);
+};
+
+/**
+ * Parse Group Elements Array
+ * @param {Array}       array               xml2js elements array
+ * @param {boolean}     [isPolyline]        true : polyline. false : polygon. (default : false)
+ * @returns {Array}                         Polygons array
+ */
+Parser.parseXmlPolygon = function parseXmlPolygon(array, isPolyline) {
+    var polygons = [];
+
+    _.each(array, function (item) {
+        polygons.push(elements.Polygon.fromNode(item, isPolyline));
+    });
+
+    return polygons;
+};
+
+/**
+ * Parse Polygon json element
+ * @param {object}  elem                    Polygon element in JSON format
+ * @returns {Polygon}                       Polygon object
+ */
+Parser.parseJsonPolygon = function parseJsonPolygon(elem) {
+    return elements.Polygon.fromJson(elem);
+};
+
+/**
+ * Parse Rect Elements Array
+ * @param {Array}       array               xml2js elements array
+ * @returns {Array}                         Rects array
+ */
+Parser.parseXmlRect = function parseXmlRect(array) {
+    var rects = [];
+
+    _.each(array, function (item) {
+        rects.push(elements.Rect.fromNode(item));
+    });
+
+    return rects;
+};
+
+/**
+ * Parse Rect json element
+ * @param {object}  elem                    Rect element in JSON format
+ * @returns {object}                        Rect object
+ */
+Parser.parseJsonRect = function parseJsonRect(elem) {
+    return elements.Rect.fromJson(elem);
+};
+
+/**
+ * Parse Text Elements Array
+ * @param {Array}       array               xml2js elements array
+ * @returns {Array}                         Texts array
+ */
+Parser.parseXmlText = function parseXmlText(array) {
+    var texts = [];
+
+    _.each(array, function (item) {
+        texts.push(elements.Text.fromNode(item));
+    });
+
+    return texts;
+};
+
+/**
+ * Parse Text json element
+ * @param {object}  elem                    Text element in JSON format
+ * @returns {Text}                        Text object
+ */
+Parser.parseJsonText = function (elem) {
+    return elements.Text.fromJson(elem);
+};
+
+/**
+ * Parse Image Elements Array
+ * @param {Array}       array               xml2js elements array
+ * @returns {Array}                         Image array
+ */
+Parser.parseXmlImage = function parseXmlImage(array) {
+    var images = [];
+
+    _.each(array, function (item) {
+        images.push(elements.Image.fromNode(item));
+    });
+
+    return images;
+};
+
+/**
+ * Parse Image json element
+ * @param {object}  elem                    Image element in JSON format
+ * @returns {object}                        Image object
+ */
+Parser.parseJsonImage = function parseJsonImage(elem) {
+    return elements.Image.fromJson(elem);
+};
+
+/**
+ * Parse Circle Elements Array
+ * @param {Array}       array               xml2js elements array
+ * @returns {Array}                         Circle array
+ */
+Parser.parseXmlCircle = function parseXmlCircle(array) {
+    var circles = [];
+
+    _.each(array, function (item) {
+        circles.push(elements.Circle.fromNode(item));
+    });
+
+    return circles;
+};
+
+/**
+ * Parse Circle json element
+ * @param {object}  elem                    Circle element in JSON format
+ * @returns {object}                        Circle object
+ */
+Parser.parseJsonCircle = function parseJsonCircle(elem) {
+    return elements.Circle.fromJson(elem);
+};
+
+/**
+ * Convert DXF File to SVG
+ * @param {object}      params              Function params
+ * @param {string}      params.path         DXF File path
+ * @param {function}    callback            Callback Function
+ */
+Parser.convertDxf = function convertDxf(params, callback) {
+    dxfParser.toArray(params.path, function (err, tab) {
+        if (err) {
+            callback(err);
+            return;
+        }
+
+        var polygons    = dxfParser.getPolygons(tab),
+            texts       = dxfParser.getTexts(tab, true);
+
+        callback(null, {
+            polygons    : polygons,
+            texts       : texts,
+            circles     : dxfParser.getCircles(tab, true),
+            mapping     : dxfParser.makeMappings(polygons, texts),
+            layers      : dxfParser.getLayersByEntities(tab, ['text', 'polygon', 'circle']),
+            parameters  : dxfParser.getParameters(tab),
+            dimensions  : dxfParser.getDimensions(polygons)
+        });
+    }.bind(this));
+};
+
+module.exports = Parser;
